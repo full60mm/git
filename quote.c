@@ -48,6 +48,12 @@ void sq_quote_buf_pretty(struct strbuf *dst, const char *src)
 	static const char ok_punct[] = "+,-./:=@_^";
 	const char *p;
 
+	/* Avoid losing a zero-length string by adding '' */
+	if (!*src) {
+		strbuf_addstr(dst, "''");
+		return;
+	}
+
 	for (p = src; *p; p++) {
 		if (!isalpha(*p) && !isdigit(*p) && !strchr(ok_punct, *p)) {
 			sq_quote_buf(dst, src);
@@ -84,12 +90,28 @@ void sq_quote_argv(struct strbuf *dst, const char **argv)
 	}
 }
 
+/*
+ * Legacy function to append each argv value, quoted as necessasry,
+ * with whitespace before each value.  This results in a leading
+ * space in the result.
+ */
 void sq_quote_argv_pretty(struct strbuf *dst, const char **argv)
+{
+	if (argv[0])
+		strbuf_addch(dst, ' ');
+	sq_append_quote_argv_pretty(dst, argv);
+}
+
+/*
+ * Append each argv value, quoted as necessary, with whitespace between them.
+ */
+void sq_append_quote_argv_pretty(struct strbuf *dst, const char **argv)
 {
 	int i;
 
 	for (i = 0; argv[i]; i++) {
-		strbuf_addch(dst, ' ');
+		if (i > 0)
+			strbuf_addch(dst, ' ');
 		sq_quote_buf_pretty(dst, argv[i]);
 	}
 }
@@ -234,7 +256,7 @@ static size_t next_quote_pos(const char *s, ssize_t maxlen)
  *     Return value is the same as in (1).
  */
 static size_t quote_c_style_counted(const char *name, ssize_t maxlen,
-                                    struct strbuf *sb, FILE *fp, int no_dq)
+				    struct strbuf *sb, FILE *fp, int no_dq)
 {
 #undef EMIT
 #define EMIT(c)                                 \

@@ -110,7 +110,7 @@ my ($_stdin, $_help, $_edit,
 	$_template, $_shared,
 	$_version, $_fetch_all, $_no_rebase, $_fetch_parent,
 	$_before, $_after,
-	$_merge, $_strategy, $_preserve_merges, $_dry_run, $_parents, $_local,
+	$_merge, $_strategy, $_rebase_merges, $_dry_run, $_parents, $_local,
 	$_prefix, $_no_checkout, $_url, $_verbose,
 	$_commit_url, $_tag, $_merge_info, $_interactive, $_set_svn_props);
 
@@ -270,7 +270,8 @@ my %cmd = (
 			  'local|l' => \$_local,
 			  'fetch-all|all' => \$_fetch_all,
 			  'dry-run|n' => \$_dry_run,
-			  'preserve-merges|p' => \$_preserve_merges,
+			  'rebase-merges|p' => \$_rebase_merges,
+			  'preserve-merges|p' => \$_rebase_merges,
 			  %fc_opts } ],
 	'commit-diff' => [ \&cmd_commit_diff,
 	                   'Commit a diff between two trees',
@@ -374,7 +375,8 @@ version() if $_version;
 usage(1) unless defined $cmd;
 load_authors() if $_authors;
 if (defined $_authors_prog) {
-	$_authors_prog = "'" . File::Spec->rel2abs($_authors_prog) . "'";
+	my $abs_file = File::Spec->rel2abs($_authors_prog);
+	$_authors_prog = "'" . $abs_file . "'" if -x $abs_file;
 }
 
 unless ($cmd =~ /^(?:clone|init|multi-init|commit-diff)$/) {
@@ -1053,7 +1055,7 @@ sub cmd_dcommit {
 					  'If you are attempting to commit ',
 					  "merges, try running:\n\t",
 					  'git rebase --interactive',
-					  '--preserve-merges ',
+					  '--rebase-merges ',
 					  $gs->refname,
 					  "\nBefore dcommitting";
 				}
@@ -1716,7 +1718,7 @@ sub rebase_cmd {
 	push @cmd, '-v' if $_verbose;
 	push @cmd, qw/--merge/ if $_merge;
 	push @cmd, "--strategy=$_strategy" if $_strategy;
-	push @cmd, "--preserve-merges" if $_preserve_merges;
+	push @cmd, "--rebase-merges" if $_rebase_merges;
 	@cmd;
 }
 

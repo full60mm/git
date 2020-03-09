@@ -70,7 +70,7 @@ sub createProject {
     }
     my $defines = join(";", sort(@{$$build_structure{"$prefix${name}_DEFINES"}}));
     my $includes= join(";", sort(map { s/^-I//; s/\//\\/g; File::Spec->file_name_is_absolute($_) ? $_ : "$rel_dir\\$_" } @{$$build_structure{"$prefix${name}_INCLUDES"}}));
-    my $cflags = join(" ", sort(map { s/^-[GLMOZ].*//; s/.* .*/"$&"/; $_; } @{$$build_structure{"$prefix${name}_CFLAGS"}}));
+    my $cflags = join(" ", sort(map { s/^-[GLMOWZ].*//; s/.* .*/"$&"/; $_; } @{$$build_structure{"$prefix${name}_CFLAGS"}}));
     $cflags =~ s/</&lt;/g;
     $cflags =~ s/>/&gt;/g;
 
@@ -79,7 +79,8 @@ sub createProject {
     if (!$static_library) {
       $libs_release = join(";", sort(grep /^(?!libgit\.lib|xdiff\/lib\.lib|vcs-svn\/lib\.lib)/, @{$$build_structure{"$prefix${name}_LIBS"}}));
       $libs_debug = $libs_release;
-      $libs_debug =~ s/zlib\.lib/zlibd\.lib/;
+      $libs_debug =~ s/zlib\.lib/zlibd\.lib/g;
+      $libs_debug =~ s/libcurl\.lib/libcurl-d\.lib/g;
     }
 
     $defines =~ s/-D//g;
@@ -119,13 +120,13 @@ sub createProject {
     <VCPKGArch Condition="'\$(Platform)'=='Win32'">x86-windows</VCPKGArch>
     <VCPKGArch Condition="'\$(Platform)'!='Win32'">x64-windows</VCPKGArch>
     <VCPKGArchDirectory>$cdup\\compat\\vcbuild\\vcpkg\\installed\\\$(VCPKGArch)</VCPKGArchDirectory>
-    <VCPKGBinDirectory Condition="'\(Configuration)'=='Debug'">\$(VCPKGArchDirectory)\\debug\\bin</VCPKGBinDirectory>
-    <VCPKGLibDirectory Condition="'\(Configuration)'=='Debug'">\$(VCPKGArchDirectory)\\debug\\lib</VCPKGLibDirectory>
-    <VCPKGBinDirectory Condition="'\(Configuration)'!='Debug'">\$(VCPKGArchDirectory)\\bin</VCPKGBinDirectory>
-    <VCPKGLibDirectory Condition="'\(Configuration)'!='Debug'">\$(VCPKGArchDirectory)\\lib</VCPKGLibDirectory>
+    <VCPKGBinDirectory Condition="'\$(Configuration)'=='Debug'">\$(VCPKGArchDirectory)\\debug\\bin</VCPKGBinDirectory>
+    <VCPKGLibDirectory Condition="'\$(Configuration)'=='Debug'">\$(VCPKGArchDirectory)\\debug\\lib</VCPKGLibDirectory>
+    <VCPKGBinDirectory Condition="'\$(Configuration)'!='Debug'">\$(VCPKGArchDirectory)\\bin</VCPKGBinDirectory>
+    <VCPKGLibDirectory Condition="'\$(Configuration)'!='Debug'">\$(VCPKGArchDirectory)\\lib</VCPKGLibDirectory>
     <VCPKGIncludeDirectory>\$(VCPKGArchDirectory)\\include</VCPKGIncludeDirectory>
-    <VCPKGLibs Condition="'\(Configuration)'=='Debug'">$libs_debug</VCPKGLibs>
-    <VCPKGLibs Condition="'\(Configuration)'!='Debug'">$libs_release</VCPKGLibs>
+    <VCPKGLibs Condition="'\$(Configuration)'=='Debug'">$libs_debug</VCPKGLibs>
+    <VCPKGLibs Condition="'\$(Configuration)'!='Debug'">$libs_release</VCPKGLibs>
   </PropertyGroup>
   <Import Project="\$(VCTargetsPath)\\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'\$(Configuration)'=='Debug'" Label="Configuration">
@@ -161,7 +162,6 @@ sub createProject {
       <AdditionalOptions>$cflags %(AdditionalOptions)</AdditionalOptions>
       <AdditionalIncludeDirectories>$cdup;$cdup\\compat;$cdup\\compat\\regex;$cdup\\compat\\win32;$cdup\\compat\\poll;$cdup\\compat\\vcbuild\\include;\$(VCPKGIncludeDirectory);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <EnableParallelCodeGeneration />
-      <MinimalRebuild>true</MinimalRebuild>
       <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
       <PrecompiledHeader />
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
@@ -173,15 +173,17 @@ sub createProject {
       <AdditionalLibraryDirectories>\$(VCPKGLibDirectory);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>\$(VCPKGLibs);\$(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalOptions>invalidcontinue.obj %(AdditionalOptions)</AdditionalOptions>
+      <EntryPointSymbol>wmainCRTStartup</EntryPointSymbol>
       <ManifestFile>$cdup\\compat\\win32\\git.manifest</ManifestFile>
       <SubSystem>Console</SubSystem>
     </Link>
 EOM
     if ($target eq 'libgit') {
         print F << "EOM";
-    <PreBuildEvent Condition="!Exists('$cdup\\compat\\vcbuild\\vcpkg')">
+    <PreBuildEvent Condition="!Exists('$cdup\\compat\\vcbuild\\vcpkg\\installed\\\$(VCPKGArch)\\include\\openssl\\ssl.h')">
       <Message>Initialize VCPKG</Message>
-      <Command>call "$cdup\\compat\\vcbuild\\vcpkg_install.bat" </Command>
+      <Command>del "$cdup\\compat\\vcbuild\\vcpkg"</Command>
+      <Command>call "$cdup\\compat\\vcbuild\\vcpkg_install.bat"</Command>
     </PreBuildEvent>
 EOM
     }
@@ -227,7 +229,7 @@ EOM
     print F << "EOM";
   </ItemGroup>
 EOM
-    if (!$static_library || $target =~ 'vcs-svn') {
+    if (!$static_library || $target =~ 'vcs-svn' || $target =~ 'xdiff') {
       my $uuid_libgit = $$build_structure{"LIBS_libgit_GUID"};
       my $uuid_xdiff_lib = $$build_structure{"LIBS_xdiff/lib_GUID"};
 
@@ -237,11 +239,15 @@ EOM
       <Project>$uuid_libgit</Project>
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
     </ProjectReference>
+EOM
+      if (!($name =~ 'xdiff')) {
+        print F << "EOM";
     <ProjectReference Include="$cdup\\xdiff\\lib\\xdiff_lib.vcxproj">
       <Project>$uuid_xdiff_lib</Project>
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
     </ProjectReference>
 EOM
+      }
       if ($name =~ /(test-(line-buffer|svn-fe)|^git-remote-testsvn)\.exe$/) {
         my $uuid_vcs_svn_lib = $$build_structure{"LIBS_vcs-svn/lib_GUID"};
         print F << "EOM";
@@ -265,11 +271,15 @@ EOM
       <DLLsAndPDBs Include="\$(VCPKGBinDirectory)\\*.dll;\$(VCPKGBinDirectory)\\*.pdb" />
     </ItemGroup>
     <Copy SourceFiles="@(DLLsAndPDBs)" DestinationFolder="\$(OutDir)" SkipUnchangedFiles="true" UseHardlinksIfPossible="true" />
+    <MakeDir Directories="..\\templates\\blt\\branches" />
   </Target>
 EOM
     }
     if ($target eq 'git') {
       print F "  <Import Project=\"LinkOrCopyBuiltins.targets\" />\n";
+    }
+    if ($target eq 'git-remote-http') {
+      print F "  <Import Project=\"LinkOrCopyRemoteHttp.targets\" />\n";
     }
     print F << "EOM";
 </Project>

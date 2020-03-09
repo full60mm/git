@@ -99,6 +99,11 @@ default.   You can use `--no-utf8` to override this.
 	am.threeWay configuration variable. For more information,
 	see am.threeWay in linkgit:git-config[1].
 
+--rerere-autoupdate::
+--no-rerere-autoupdate::
+	Allow the rerere mechanism to update the index with the
+	result of auto-conflict resolution if possible.
+
 --ignore-space-change::
 --ignore-whitespace::
 --whitespace=<option>::
@@ -172,7 +177,7 @@ default.   You can use `--no-utf8` to override this.
 	untouched.
 
 --show-current-patch::
-	Show the patch being applied when "git am" is stopped because
+	Show the entire e-mail message "git am" has stopped at, because
 	of conflicts.
 
 DISCUSSION
@@ -185,8 +190,8 @@ the commit, after stripping common prefix "[PATCH <anything>]".
 The "Subject: " line is supposed to concisely describe what the
 commit is about in one line of text.
 
-"From: " and "Subject: " lines starting the body override the respective
-commit author name and title values taken from the headers.
+"From: ", "Date: ", and "Subject: " lines starting the body override the
+respective commit author name and title values taken from the headers.
 
 The commit message is formed by the title taken from the
 "Subject: ", a blank line and the body of the message up to

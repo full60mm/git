@@ -554,7 +554,7 @@ sub get_record {
 	my ($fh, $rs) = @_;
 	local $/ = $rs;
 	my $rec = <$fh>;
-	chomp $rec if defined $rs;
+	chomp $rec if defined $rec;
 	$rec;
 }
 
@@ -563,7 +563,7 @@ sub get_record {
 Query user C<PROMPT> and return answer from user.
 
 Honours GIT_ASKPASS and SSH_ASKPASS environment variables for querying
-the user. If no *_ASKPASS variable is set or an error occoured,
+the user. If no *_ASKPASS variable is set or an error occurred,
 the terminal is tried as a fallback.
 If C<ISPASSWORD> is set and true, the terminal disables echo.
 
@@ -980,7 +980,7 @@ sub cat_blob {
 		return -1;
 	}
 
-	if ($description !~ /^[0-9a-fA-F]{40} \S+ (\d+)$/) {
+	if ($description !~ /^[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})? \S+ (\d+)$/) {
 		carp "Unexpected result returned from git cat-file";
 		return -1;
 	}

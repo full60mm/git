@@ -14,8 +14,13 @@ struct trace_key trace_fsmonitor = TRACE_KEY_INIT(FSMONITOR);
 static void fsmonitor_ewah_callback(size_t pos, void *is)
 {
 	struct index_state *istate = (struct index_state *)is;
-	struct cache_entry *ce = istate->cache[pos];
+	struct cache_entry *ce;
 
+	if (pos >= istate->cache_nr)
+		BUG("fsmonitor_dirty has more entries than the index (%"PRIuMAX" >= %u)",
+		    (uintmax_t)pos, istate->cache_nr);
+
+	ce = istate->cache[pos];
 	ce->ce_flags &= ~CE_FSMONITOR_VALID;
 }
 
@@ -50,17 +55,25 @@ int read_fsmonitor_extension(struct index_state *istate, const void *data,
 	}
 	istate->fsmonitor_dirty = fsmonitor_dirty;
 
+	if (!istate->split_index &&
+	    istate->fsmonitor_dirty->bit_size > istate->cache_nr)
+		BUG("fsmonitor_dirty has more entries than the index (%"PRIuMAX" > %u)",
+		    (uintmax_t)istate->fsmonitor_dirty->bit_size, istate->cache_nr);
+
 	trace_printf_key(&trace_fsmonitor, "read fsmonitor extension successful");
 	return 0;
 }
 
 void fill_fsmonitor_bitmap(struct index_state *istate)
 {
-	int i;
+	unsigned int i, skipped = 0;
 	istate->fsmonitor_dirty = ewah_new();
-	for (i = 0; i < istate->cache_nr; i++)
-		if (!(istate->cache[i]->ce_flags & CE_FSMONITOR_VALID))
-			ewah_set(istate->fsmonitor_dirty, i);
+	for (i = 0; i < istate->cache_nr; i++) {
+		if (istate->cache[i]->ce_flags & CE_REMOVE)
+			skipped++;
+		else if (!(istate->cache[i]->ce_flags & CE_FSMONITOR_VALID))
+			ewah_set(istate->fsmonitor_dirty, i - skipped);
+	}
 }
 
 void write_fsmonitor_extension(struct strbuf *sb, struct index_state *istate)
@@ -70,6 +83,11 @@ void write_fsmonitor_extension(struct strbuf *sb, struct index_state *istate)
 	uint32_t ewah_start;
 	uint32_t ewah_size = 0;
 	int fixup = 0;
+
+	if (!istate->split_index &&
+	    istate->fsmonitor_dirty->bit_size > istate->cache_nr)
+		BUG("fsmonitor_dirty has more entries than the index (%"PRIuMAX" > %u)",
+		    (uintmax_t)istate->fsmonitor_dirty->bit_size, istate->cache_nr);
 
 	put_be32(&hdr_version, INDEX_EXTENSION_VERSION);
 	strbuf_add(sb, &hdr_version, sizeof(uint32_t));
@@ -97,19 +115,13 @@ void write_fsmonitor_extension(struct strbuf *sb, struct index_state *istate)
 static int query_fsmonitor(int version, uint64_t last_update, struct strbuf *query_result)
 {
 	struct child_process cp = CHILD_PROCESS_INIT;
-	char ver[64];
-	char date[64];
-	const char *argv[4];
 
-	if (!(argv[0] = core_fsmonitor))
+	if (!core_fsmonitor)
 		return -1;
 
-	snprintf(ver, sizeof(version), "%d", version);
-	snprintf(date, sizeof(date), "%" PRIuMAX, (uintmax_t)last_update);
-	argv[1] = ver;
-	argv[2] = date;
-	argv[3] = NULL;
-	cp.argv = argv;
+	argv_array_push(&cp.args, core_fsmonitor);
+	argv_array_pushf(&cp.args, "%d", version);
+	argv_array_pushf(&cp.args, "%" PRIuMAX, (uintmax_t)last_update);
 	cp.use_shell = 1;
 	cp.dir = get_git_work_tree();
 
@@ -135,17 +147,16 @@ static void fsmonitor_refresh_callback(struct index_state *istate, const char *n
 
 void refresh_fsmonitor(struct index_state *istate)
 {
-	static int has_run_once = 0;
 	struct strbuf query_result = STRBUF_INIT;
 	int query_success = 0;
 	size_t bol; /* beginning of line */
 	uint64_t last_update;
 	char *buf;
-	int i;
+	unsigned int i;
 
-	if (!core_fsmonitor || has_run_once)
+	if (!core_fsmonitor || istate->fsmonitor_has_run_once)
 		return;
-	has_run_once = 1;
+	istate->fsmonitor_has_run_once = 1;
 
 	trace_printf_key(&trace_fsmonitor, "refresh fsmonitor");
 	/*
@@ -180,10 +191,26 @@ void refresh_fsmonitor(struct index_state *istate)
 		}
 		if (bol < query_result.len)
 			fsmonitor_refresh_callback(istate, buf + bol);
+
+		/* Now mark the untracked cache for fsmonitor usage */
+		if (istate->untracked)
+			istate->untracked->use_fsmonitor = 1;
 	} else {
+
+		/* We only want to run the post index changed hook if we've actually changed entries, so keep track
+		 * if we actually changed entries or not */
+		int is_cache_changed = 0;
 		/* Mark all entries invalid */
-		for (i = 0; i < istate->cache_nr; i++)
-			istate->cache[i]->ce_flags &= ~CE_FSMONITOR_VALID;
+		for (i = 0; i < istate->cache_nr; i++) {
+			if (istate->cache[i]->ce_flags & CE_FSMONITOR_VALID) {
+				is_cache_changed = 1;
+				istate->cache[i]->ce_flags &= ~CE_FSMONITOR_VALID;
+			}
+		}
+
+		/* If we're going to check every file, ensure we save the results */
+		if (is_cache_changed)
+			istate->cache_changed |= FSMONITOR_CHANGED;
 
 		if (istate->untracked)
 			istate->untracked->use_fsmonitor = 0;
@@ -196,7 +223,7 @@ void refresh_fsmonitor(struct index_state *istate)
 
 void add_fsmonitor(struct index_state *istate)
 {
-	int i;
+	unsigned int i;
 
 	if (!istate->fsmonitor_last_update) {
 		trace_printf_key(&trace_fsmonitor, "add fsmonitor");
@@ -229,7 +256,7 @@ void remove_fsmonitor(struct index_state *istate)
 
 void tweak_fsmonitor(struct index_state *istate)
 {
-	int i;
+	unsigned int i;
 	int fsmonitor_enabled = git_config_get_fsmonitor();
 
 	if (istate->fsmonitor_dirty) {
@@ -240,11 +267,12 @@ void tweak_fsmonitor(struct index_state *istate)
 			}
 
 			/* Mark all previously saved entries as dirty */
+			if (istate->fsmonitor_dirty->bit_size > istate->cache_nr)
+				BUG("fsmonitor_dirty has more entries than the index (%"PRIuMAX" > %u)",
+				    (uintmax_t)istate->fsmonitor_dirty->bit_size, istate->cache_nr);
 			ewah_each_bit(istate->fsmonitor_dirty, fsmonitor_ewah_callback, istate);
 
-			/* Now mark the untracked cache for fsmonitor usage */
-			if (istate->untracked)
-				istate->untracked->use_fsmonitor = 1;
+			refresh_fsmonitor(istate);
 		}
 
 		ewah_free(istate->fsmonitor_dirty);

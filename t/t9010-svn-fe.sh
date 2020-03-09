@@ -53,8 +53,6 @@ text_no_props () {
 	printf "%s\n" "$text"
 }
 
->empty
-
 test_expect_success 'empty dump' '
 	reinit_git &&
 	echo "SVN-fs-dump-format-version: 2" >input &&
@@ -208,7 +206,7 @@ test_expect_failure 'timestamp and empty file' '
 	test_cmp expect.date actual.date &&
 	test_cmp expect.files actual.files &&
 	git checkout HEAD empty-file &&
-	test_cmp empty file
+	test_must_be_empty file
 '
 
 test_expect_success 'directory with files' '
@@ -473,7 +471,7 @@ test_expect_failure 'change file mode but keep old content' '
 	{
 		git rev-list HEAD |
 		git diff-tree --root --stdin |
-		sed "s/$_x40/OBJID/g"
+		sed "s/$OID_REGEX/OBJID/g"
 	} >actual &&
 	git show HEAD:greeting >actual.blob &&
 	git show HEAD^:greeting >actual.target &&
@@ -573,7 +571,7 @@ test_expect_success 'NUL in log message, file content, and property name' '
 	{
 		git rev-list HEAD |
 		git diff-tree --root --stdin |
-		sed "s/$_x40/OBJID/g"
+		sed "s/$OID_REGEX/OBJID/g"
 	} >actual &&
 	{
 		git cat-file commit HEAD | nul_to_q &&
@@ -659,7 +657,7 @@ test_expect_success 'change file mode and reiterate content' '
 	{
 		git rev-list HEAD |
 		git diff-tree --root --stdin |
-		sed "s/$_x40/OBJID/g"
+		sed "s/$OID_REGEX/OBJID/g"
 	} >actual &&
 	git show HEAD:greeting >actual.blob &&
 	git show HEAD^:greeting >actual.target &&
@@ -792,7 +790,7 @@ test_expect_success 'property deltas supported' '
 	{
 		git rev-list HEAD |
 		git diff-tree --stdin |
-		sed "s/$_x40/OBJID/g"
+		sed "s/$OID_REGEX/OBJID/g"
 	} >actual &&
 	test_cmp expect actual
 '
@@ -846,7 +844,7 @@ test_expect_success 'properties on /' '
 	{
 		git rev-list HEAD |
 		git diff-tree --root --always --stdin |
-		sed "s/$_x40/OBJID/g"
+		sed "s/$OID_REGEX/OBJID/g"
 	} >actual &&
 	test_cmp expect actual
 '
@@ -931,7 +929,7 @@ test_expect_success 'deltas for typechange' '
 	{
 		git rev-list HEAD |
 		git diff-tree --root --stdin |
-		sed "s/$_x40/OBJID/g"
+		sed "s/$OID_REGEX/OBJID/g"
 	} >actual &&
 	test_cmp expect actual
 '
@@ -1030,7 +1028,7 @@ test_expect_success 'deltas need not consume the whole preimage' '
 	{
 		git rev-list HEAD |
 		git diff-tree --root --stdin |
-		sed "s/$_x40/OBJID/g"
+		sed "s/$OID_REGEX/OBJID/g"
 	} >actual &&
 	test_cmp expect actual &&
 	git show HEAD:postimage >actual.3 &&

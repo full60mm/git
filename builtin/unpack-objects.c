@@ -1,6 +1,7 @@
 #include "builtin.h"
 #include "cache.h"
 #include "config.h"
+#include "object-store.h"
 #include "object.h"
 #include "delta.h"
 #include "pack.h"
@@ -23,6 +24,7 @@ static off_t consumed_bytes;
 static off_t max_input_size;
 static git_hash_ctx ctx;
 static struct fsck_options fsck_options = FSCK_OPTIONS_STRICT;
+static struct progress *progress;
 
 /*
  * When running under --strict mode, objects whose reachability are
@@ -91,6 +93,7 @@ static void use(int bytes)
 	consumed_bytes += bytes;
 	if (max_input_size && consumed_bytes > max_input_size)
 		die(_("pack exceeds maximum allowed size"));
+	display_throughput(progress, consumed_bytes);
 }
 
 static void *get_data(unsigned long size)
@@ -199,7 +202,7 @@ static int check_object(struct object *obj, int type, void *data, struct fsck_op
 
 	if (!(obj->flags & FLAG_OPEN)) {
 		unsigned long size;
-		int type = sha1_object_info(obj->oid.hash, &size);
+		int type = oid_object_info(the_repository, &obj->oid, &size);
 		if (type != obj->type || type <= 0)
 			die("object of unexpected type");
 		obj->flags |= FLAG_WRITTEN;
@@ -210,7 +213,7 @@ static int check_object(struct object *obj, int type, void *data, struct fsck_op
 	if (!obj_buf)
 		die("Whoops! Cannot find object '%s'", oid_to_hex(&obj->oid));
 	if (fsck_object(obj, obj_buf->buffer, obj_buf->size, &fsck_options))
-		die("Error in object");
+		die("fsck error in packed object");
 	fsck_options.walk = check_object;
 	if (fsck_walk(obj, NULL, &fsck_options))
 		die("Error on reachable objects of %s", oid_to_hex(&obj->oid));
@@ -253,7 +256,7 @@ static void write_object(unsigned nr, enum object_type type,
 		added_object(nr, type, buf, size);
 		free(buf);
 
-		blob = lookup_blob(&obj_list[nr].oid);
+		blob = lookup_blob(the_repository, &obj_list[nr].oid);
 		if (blob)
 			blob->object.flags |= FLAG_WRITTEN;
 		else
@@ -264,7 +267,8 @@ static void write_object(unsigned nr, enum object_type type,
 		int eaten;
 		hash_object_file(buf, size, type_name(type), &obj_list[nr].oid);
 		added_object(nr, type, buf, size);
-		obj = parse_object_buffer(&obj_list[nr].oid, type, size, buf,
+		obj = parse_object_buffer(the_repository, &obj_list[nr].oid,
+					  type, size, buf,
 					  &eaten);
 		if (!obj)
 			die("invalid %s", type_name(type));
@@ -301,7 +305,7 @@ static void added_object(unsigned nr, enum object_type type,
 	struct delta_info *info;
 
 	while ((info = *p) != NULL) {
-		if (!oidcmp(&info->base_oid, &obj_list[nr].oid) ||
+		if (oideq(&info->base_oid, &obj_list[nr].oid) ||
 		    info->base_offset == obj_list[nr].offset) {
 			*p = info->next;
 			p = &delta_list;
@@ -330,7 +334,7 @@ static int resolve_against_held(unsigned nr, const struct object_id *base,
 {
 	struct object *obj;
 	struct obj_buffer *obj_buffer;
-	obj = lookup_object(base->hash);
+	obj = lookup_object(the_repository, base);
 	if (!obj)
 		return 0;
 	obj_buffer = lookup_object_buffer(obj);
@@ -423,7 +427,7 @@ static void unpack_delta_entry(enum object_type type, unsigned long delta_size,
 	if (resolve_against_held(nr, &base_oid, delta_data, delta_size))
 		return;
 
-	base = read_sha1_file(base_oid.hash, &type, &base_size);
+	base = read_object_file(&base_oid, &type, &base_size);
 	if (!base) {
 		error("failed to read delta-pack base object %s",
 		      oid_to_hex(&base_oid));
@@ -482,7 +486,6 @@ static void unpack_one(unsigned nr)
 static void unpack_all(void)
 {
 	int i;
-	struct progress *progress = NULL;
 	struct pack_header *hdr = fill(sizeof(struct pack_header));
 
 	nr_objects = ntohl(hdr->hdr_entries);
@@ -512,7 +515,7 @@ int cmd_unpack_objects(int argc, const char **argv, const char *prefix)
 	int i;
 	struct object_id oid;
 
-	check_replace_refs = 0;
+	read_replace_refs = 0;
 
 	git_config(git_default_config, NULL);
 
@@ -572,9 +575,12 @@ int cmd_unpack_objects(int argc, const char **argv, const char *prefix)
 	unpack_all();
 	the_hash_algo->update_fn(&ctx, buffer, offset);
 	the_hash_algo->final_fn(oid.hash, &ctx);
-	if (strict)
+	if (strict) {
 		write_rest();
-	if (hashcmp(fill(the_hash_algo->rawsz), oid.hash))
+		if (fsck_finish(&fsck_options))
+			die(_("fsck error in pack objects"));
+	}
+	if (!hasheq(fill(the_hash_algo->rawsz), oid.hash))
 		die("final sha1 did not match");
 	use(the_hash_algo->rawsz);
 

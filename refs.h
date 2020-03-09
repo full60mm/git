@@ -3,8 +3,10 @@
 
 struct object_id;
 struct ref_store;
+struct repository;
 struct strbuf;
 struct string_list;
+struct string_list_item;
 struct worktree;
 
 /*
@@ -109,7 +111,7 @@ int should_autocreate_reflog(const char *refname);
 
 int is_branch(const char *refname);
 
-extern int refs_init_db(struct strbuf *err);
+int refs_init_db(struct strbuf *err);
 
 /*
  * If refname is a non-symbolic reference that refers to a tag object,
@@ -139,7 +141,16 @@ int resolve_gitlink_ref(const char *submodule, const char *refname,
  */
 int refname_match(const char *abbrev_name, const char *full_name);
 
-int expand_ref(const char *str, int len, struct object_id *oid, char **ref);
+/*
+ * Given a 'prefix' expand it by the rules in 'ref_rev_parse_rules' and add
+ * the results to 'prefixes'
+ */
+struct argv_array;
+void expand_ref_prefix(struct argv_array *prefixes, const char *prefix);
+
+int expand_ref(struct repository *r, const char *str, int len, struct object_id *oid, char **ref);
+int repo_dwim_ref(struct repository *r, const char *str, int len, struct object_id *oid, char **ref);
+int repo_dwim_log(struct repository *r, const char *str, int len, struct object_id *oid, char **ref);
 int dwim_ref(const char *str, int len, struct object_id *oid, char **ref);
 int dwim_log(const char *str, int len, struct object_id *oid, char **ref);
 
@@ -268,6 +279,16 @@ typedef int each_ref_fn(const char *refname,
 			const struct object_id *oid, int flags, void *cb_data);
 
 /*
+ * The same as each_ref_fn, but also with a repository argument that
+ * contains the repository associated with the callback.
+ */
+typedef int each_repo_ref_fn(struct repository *r,
+			     const char *refname,
+			     const struct object_id *oid,
+			     int flags,
+			     void *cb_data);
+
+/*
  * The following functions invoke the specified callback function for
  * each reference indicated.  If the function ever returns a nonzero
  * value, stop the iteration and return that value.  Please note that
@@ -289,19 +310,35 @@ int refs_for_each_branch_ref(struct ref_store *refs,
 int refs_for_each_remote_ref(struct ref_store *refs,
 			     each_ref_fn fn, void *cb_data);
 
+/* just iterates the head ref. */
 int head_ref(each_ref_fn fn, void *cb_data);
+
+/* iterates all refs. */
 int for_each_ref(each_ref_fn fn, void *cb_data);
+
+/**
+ * iterates all refs which have a defined prefix and strips that prefix from
+ * the passed variable refname.
+ */
 int for_each_ref_in(const char *prefix, each_ref_fn fn, void *cb_data);
+
 int refs_for_each_fullref_in(struct ref_store *refs, const char *prefix,
 			     each_ref_fn fn, void *cb_data,
 			     unsigned int broken);
 int for_each_fullref_in(const char *prefix, each_ref_fn fn, void *cb_data,
 			unsigned int broken);
+
+/**
+ * iterate refs from the respective area.
+ */
 int for_each_tag_ref(each_ref_fn fn, void *cb_data);
 int for_each_branch_ref(each_ref_fn fn, void *cb_data);
 int for_each_remote_ref(each_ref_fn fn, void *cb_data);
-int for_each_replace_ref(each_ref_fn fn, void *cb_data);
+int for_each_replace_ref(struct repository *r, each_repo_ref_fn fn, void *cb_data);
+
+/* iterates all refs that match the specified glob pattern. */
 int for_each_glob_ref(each_ref_fn fn, const char *pattern, void *cb_data);
+
 int for_each_glob_ref_in(each_ref_fn fn, const char *pattern,
 			 const char *prefix, void *cb_data);
 
@@ -367,7 +404,8 @@ int refs_create_reflog(struct ref_store *refs, const char *refname,
 int safe_create_reflog(const char *refname, int force_create, struct strbuf *err);
 
 /** Reads log for the value of ref during at_time. **/
-int read_ref_at(const char *refname, unsigned int flags,
+int read_ref_at(struct ref_store *refs,
+		const char *refname, unsigned int flags,
 		timestamp_t at_time, int cnt,
 		struct object_id *oid, char **msg,
 		timestamp_t *cutoff_time, int *cutoff_tz, int *cutoff_cnt);
@@ -441,8 +479,16 @@ int for_each_reflog(each_ref_fn fn, void *cb_data);
  */
 int check_refname_format(const char *refname, int flags);
 
+/*
+ * Apply the rules from check_refname_format, but mutate the result until it
+ * is acceptable, and place the result in "out".
+ */
+void sanitize_refname_component(const char *refname, struct strbuf *out);
+
 const char *prettify_refname(const char *refname);
 
+char *refs_shorten_unambiguous_ref(struct ref_store *refs,
+				   const char *refname, int strict);
 char *shorten_unambiguous_ref(const char *refname, int strict);
 
 /** rename ref, return 0 on success **/
@@ -695,9 +741,11 @@ int parse_hide_refs_config(const char *var, const char *value, const char *);
 int ref_is_hidden(const char *, const char *);
 
 enum ref_type {
-	REF_TYPE_PER_WORKTREE,
-	REF_TYPE_PSEUDOREF,
-	REF_TYPE_NORMAL,
+	REF_TYPE_PER_WORKTREE,	  /* refs inside refs/ but not shared       */
+	REF_TYPE_PSEUDOREF,	  /* refs outside refs/ in current worktree */
+	REF_TYPE_MAIN_PSEUDOREF,  /* pseudo refs from the main worktree     */
+	REF_TYPE_OTHER_PSEUDOREF, /* pseudo refs from other worktrees       */
+	REF_TYPE_NORMAL,	  /* normal/shared refs inside refs/        */
 };
 
 enum ref_type ref_type(const char *refname);
@@ -758,7 +806,42 @@ int reflog_expire(const char *refname, const struct object_id *oid,
 
 int ref_storage_backend_exists(const char *name);
 
-struct ref_store *get_main_ref_store(void);
+struct ref_store *get_main_ref_store(struct repository *r);
+
+/**
+ * Submodules
+ * ----------
+ *
+ * If you want to iterate the refs of a submodule you first need to add the
+ * submodules object database. You can do this by a code-snippet like
+ * this:
+ *
+ * 	const char *path = "path/to/submodule"
+ * 	if (add_submodule_odb(path))
+ * 		die("Error submodule '%s' not populated.", path);
+ *
+ * `add_submodule_odb()` will return zero on success. If you
+ * do not do this you will get an error for each ref that it does not point
+ * to a valid object.
+ *
+ * Note: As a side-effect of this you cannot safely assume that all
+ * objects you lookup are available in superproject. All submodule objects
+ * will be available the same way as the superprojects objects.
+ *
+ * Example:
+ * --------
+ *
+ * ----
+ * static int handle_remote_ref(const char *refname,
+ * 		const unsigned char *sha1, int flags, void *cb_data)
+ * {
+ * 	struct strbuf *output = cb_data;
+ * 	strbuf_addf(output, "%s\n", refname);
+ * 	return 0;
+ * }
+ *
+ */
+
 /*
  * Return the ref_store instance for the specified submodule. For the
  * main repository, use submodule==NULL; such a call cannot fail. For
